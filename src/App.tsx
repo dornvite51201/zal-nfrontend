@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Dashboard from "./Dashboard";
 import Login from "./Login";
 import { apiLogout } from "./api";
