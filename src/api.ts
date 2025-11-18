@@ -1,144 +1,109 @@
-// src/api.ts
 import axios from "axios";
 
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "http://127.0.0.1:8000",
-});
+export const API_URL =
+  (import.meta as any).env?.VITE_API_URL || "http://127.0.0.1:8000";
 
-// Dołącz token Bearer jeśli jest w localStorage (zgodne z Axios v1 i v0.x)
-api.interceptors.request.use((cfg) => {
-  const t = localStorage.getItem("token");
-  if (t) {
-    // Axios v1: cfg.headers to AxiosHeaders -> ma metodę set()
-    const h = cfg.headers as any;
-    if (h?.set instanceof Function) {
-      h.set("Authorization", `Bearer ${t}`);
-    } else {
-      // Axios v0.x lub nietypowa konfiguracja
-      cfg.headers = {
-        ...(cfg.headers || {}),
-        Authorization: `Bearer ${t}`,
-      } as any;
-    }
-  }
-  return cfg;
-});
+export function getToken(): string | null {
+  return localStorage.getItem("token");
+}
 
-// ===== TYPY =====
+const http = axios.create({ baseURL: API_URL });
+http.interceptors.request.use((config) => {
+  const t = getToken();
+  if (t) config.headers.Authorization = `Bearer ${t}`;
+  return config;
+});
 
 export type Series = {
   id: number;
   name: string;
   min_value: number;
   max_value: number;
-  color?: string;
-  icon?: string;
+  color?: string | null;
+  icon?: string | null;
 };
 
 export type Measurement = {
   id: number;
   series_id: number;
   value: number;
-  timestamp: string; // ISO
+  timestamp: string;
 };
 
-// ===== AUTH =====
-
 export async function apiLogin(username: string, password: string) {
-  const form = new URLSearchParams();
-  form.set("username", username);
-  form.set("password", password);
-
-  const { data } = await api.post("/auth/login", form, {
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  const res = await http.post("/auth/login", { username, password }, {
+    headers: { "Content-Type": "application/json" },
   });
-
-  localStorage.setItem("token", data.access_token);
-  return data;
+  const token: string | undefined = res.data?.access_token;
+  if (!token) throw new Error("Brak tokenu w odpowiedzi z /auth/login");
+  localStorage.setItem("token", token);
+  return res.data;
 }
 
 export function apiLogout() {
   localStorage.removeItem("token");
 }
 
-export async function apiChangePassword(
-  old_password: string,
-  new_password: string
-) {
-  await api.post("/auth/change-password", { old_password, new_password });
+export async function apiChangePassword(old_password: string, new_password: string) {
+  await http.post("/auth/change-password", { old_password, new_password });
 }
 
-// ===== SERIES =====
-
-export async function apiListSeries(params?: {
-  limit?: number;
-  offset?: number;
-}) {
-  const { data } = await api.get("/series", { params });
-  const items = Array.isArray(data) ? data : data.items;
-  return { items: items as Series[] };
+export async function apiListSeries(params?: { limit?: number; offset?: number }) {
+  const res = await http.get<Series[]>("/series", { params });
+  return { items: res.data };
 }
 
-export async function apiCreateSeries(payload: {
+export async function apiCreateSeries(data: {
   name: string;
   min_value: number;
   max_value: number;
-  color?: string;
-  icon?: string;
+  color?: string | null;
+  icon?: string | null;
 }) {
-  const { data } = await api.post("/series", payload);
-  return data as Series;
+  const res = await http.post<Series>("/series", data);
+  return res.data;
 }
 
 export async function apiUpdateSeries(
   id: number,
-  payload: {
-    name: string;
-    min_value: number;
-    max_value: number;
-    color?: string;
-    icon?: string;
-  }
+  data: Partial<Pick<Series, "name" | "min_value" | "max_value" | "color" | "icon">>
 ) {
-  const { data } = await api.put(`/series/${id}`, payload);
-  return data as Series;
+  const res = await http.put<Series>(`/series/${id}`, data);
+  return res.data;
 }
 
 export async function apiDeleteSeries(id: number) {
-  await api.delete(`/series/${id}`);
+  await http.delete(`/series/${id}`);
 }
-
-// ===== MEASUREMENTS =====
 
 export async function apiListMeasurements(params: {
-  series_id?: number;
-  limit?: number;
-  offset?: number;
+  series_id: number;
   ts_from?: string;
   ts_to?: string;
+  limit?: number;
+  offset?: number;
 }) {
-  const { data } = await api.get("/measurements", { params });
-  const items = Array.isArray(data) ? data : data.items;
-  return { items: items as Measurement[] };
+  const res = await http.get<Measurement[]>("/measurements", { params });
+  return { items: res.data };
 }
 
-export async function apiCreateMeasurement(payload: {
+export async function apiCreateMeasurement(data: {
   series_id: number;
   value: number;
   timestamp: string;
 }) {
-  const { data } = await api.post("/measurements", payload);
-  return data as Measurement;
+  const res = await http.post<Measurement>("/measurements", data);
+  return res.data;
 }
 
 export async function apiUpdateMeasurement(
   id: number,
-  payload: { series_id: number; value: number; timestamp: string }
+  data: { series_id: number; value: number; timestamp: string }
 ) {
-  const { data } = await api.put(`/measurements/${id}`, payload);
-  return data as Measurement;
+  const res = await http.put<Measurement>(`/measurements/${id}`, data);
+  return res.data;
 }
 
 export async function apiDeleteMeasurement(id: number) {
-  await api.delete(`/measurements/${id}`);
+  await http.delete(`/measurements/${id}`);
 }

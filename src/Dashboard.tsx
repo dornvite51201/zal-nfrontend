@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   apiListSeries,
   apiListMeasurements,
@@ -43,68 +43,113 @@ function fmtTime(ts: string) {
   });
 }
 
-// RWD tylko dla grida; max-width robi resztę.
-const responsiveCSS = `
-@media (max-width: 1200px) {
-  div[data-dashboard-grid] {
-    grid-template-columns: minmax(260px, 320px) minmax(480px, 2fr);
-    grid-auto-rows: auto;
-  }
-  div[data-dashboard-right] {
-    grid-column: 1 / span 2;
-  }
+function toLocalInputValue(ts: string) {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const year = d.getFullYear();
+  const month = pad(d.getMonth() + 1);
+  const day = pad(d.getDate());
+  const hours = pad(d.getHours());
+  const mins = pad(d.getMinutes());
+  const secs = pad(d.getSeconds());
+  return `${year}-${month}-${day}T${hours}:${mins}:${secs}`;
 }
 
-@media (max-width: 900px) {
-  div[data-dashboard-grid] {
-    grid-template-columns: 1fr;
-  }
-  div[data-dashboard-right] {
-    grid-column: auto;
-  }
+const responsiveCSS = `
+@media (max-width: 1280px) {
+  div[data-dashboard-grid]{ grid-template-columns: 1fr !important; }
 }
 `;
 
 const printCSS = `
+@page {
+  size: A4 portrait;
+  margin: 10mm;
+}
+.chart-print {
+  display: none;
+}
 @media print {
+  html, body {
+    margin: 0;
+    padding: 0;
+  }
+  html, body, #root {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    background: #1a1a1a !important;
+    color: #fff !important;
+  }
   .no-print {
     display: none !important;
   }
-  body {
-    background: #ffffff !important;
-    color: #000000 !important;
-    margin: 0;
+  .page-wrap {
+    min-height: auto !important;
+    height: auto !important;
+    padding: 0 !important;
+  }
+  div[data-dashboard-grid] {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: 8mm !important;
+  }
+  .card {
+    background: #1f1f1f !important;
+    border: 1px solid #333 !important;
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+  .chart-screen {
+    display: none !important;
+  }
+  .chart-print {
+    display: block !important;
+    width: 100% !important;
+  }
+  .chart-card {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .table-card {
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+  .table-card table {
+    page-break-inside: auto;
+  }
+  .table-card tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  [style*="position: fixed"] {
+    display: none !important;
   }
 }
 `;
 
 export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
-  // --- STATE ---
-
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeriesId, setSelectedSeriesId] = useState<number | null>(null);
   const [activeSeriesIds, setActiveSeriesIds] = useState<number[]>([]);
-
-  const [measurementsBySeries, setMeasurementsBySeries] = useState<
-    Record<number, Measurement[]>
-  >({});
-
+  const [measurementsBySeries, setMeasurementsBySeries] = useState<Record<number, Measurement[]>>({});
   const [loadingSeries, setLoadingSeries] = useState(false);
   const [loadingMeas, setLoadingMeas] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const [newValue, setNewValue] = useState("");
+  const [newValue, setNewValue] = useState<string>("");
+  const [newUseNow, setNewUseNow] = useState(true);
+  const [newTimestamp, setNewTimestamp] = useState("");
+
+  const [filterMode, setFilterMode] = useState<"date" | "datetime">("date");
   const [fromTs, setFromTs] = useState("");
   const [toTs, setToTs] = useState("");
 
-  const [selectedMeasurementId, setSelectedMeasurementId] = useState<
-    number | null
-  >(null);
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState<number | null>(null);
+  const [selectedMeasurementIds, setSelectedMeasurementIds] = useState<number[]>([]);
 
-  const [editMeasurement, setEditMeasurement] = useState<Measurement | null>(
-    null
-  );
+  const [editMeasurement, setEditMeasurement] = useState<Measurement | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [editTs, setEditTs] = useState("");
 
   const [seriesEditName, setSeriesEditName] = useState("");
   const [seriesEditMin, setSeriesEditMin] = useState("");
@@ -120,8 +165,6 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
   const [newPassword, setNewPassword] = useState("");
   const [passwordMsg, setPasswordMsg] = useState<string | null>(null);
 
-  // --- LOAD SERIES ---
-
   useEffect(() => {
     async function loadSeries() {
       try {
@@ -130,24 +173,16 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
         const res = await apiListSeries({ limit: 200, offset: 0 });
         const items: Series[] = res.items ?? [];
         setSeriesList(items);
-        if (items.length > 0 && selectedSeriesId === null) {
-          setSelectedSeriesId(items[0].id);
-        }
-        if (items.length > 0 && activeSeriesIds.length === 0) {
-          setActiveSeriesIds(items.map((s) => s.id)); // domyślnie wszystkie
-        }
-      } catch (e) {
-        console.error(e);
+        if (items.length > 0 && selectedSeriesId === null) setSelectedSeriesId(items[0].id);
+        if (items.length > 0 && activeSeriesIds.length === 0) setActiveSeriesIds(items.map((s) => s.id));
+      } catch {
         setErrorMsg("Nie udało się pobrać listy serii.");
       } finally {
         setLoadingSeries(false);
       }
     }
     loadSeries();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // --- LOAD MEASUREMENTS ---
 
   useEffect(() => {
     async function loadAll() {
@@ -160,33 +195,42 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
         setErrorMsg(null);
         const next: Record<number, Measurement[]> = {};
 
+        const buildIso = (value: string, endOfDay: boolean) => {
+          if (!value) return null;
+          if (filterMode === "datetime") {
+            let v = value;
+            if (v.length === 16) v += ":00";
+            return v;
+          } else {
+            return `${value}${endOfDay ? "T23:59:59" : "T00:00:00"}`;
+          }
+        };
+
+        const fromIso = buildIso(fromTs, false);
+        const toIso = buildIso(toTs, true);
+
         for (const id of activeSeriesIds) {
           const params: any = { series_id: id, limit: 500 };
-          if (fromTs) params.ts_from = new Date(fromTs).toISOString();
-          if (toTs) params.ts_to = new Date(toTs).toISOString();
-
+          if (fromIso) params.ts_from = fromIso;
+          if (toIso) params.ts_to = toIso;
           const res = await apiListMeasurements(params);
           next[id] = (res.items ?? []).sort(
-            (a, b) =>
-              new Date(a.timestamp).getTime() -
-              new Date(b.timestamp).getTime()
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
           );
         }
-
         setMeasurementsBySeries(next);
         setSelectedMeasurementId(null);
+        setSelectedMeasurementIds([]);
         setEditMeasurement(null);
-      } catch (e) {
-        console.error(e);
+        setEditTs("");
+      } catch {
         setErrorMsg("Nie udało się pobrać pomiarów.");
       } finally {
         setLoadingMeas(false);
       }
     }
     loadAll();
-  }, [activeSeriesIds, fromTs, toTs]);
-
-  // --- SYNC FORM SERII ---
+  }, [activeSeriesIds, fromTs, toTs, filterMode]);
 
   useEffect(() => {
     const s = seriesList.find((x) => x.id === selectedSeriesId);
@@ -199,83 +243,119 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
 
   const selectedSeries = seriesList.find((s) => s.id === selectedSeriesId);
 
-  // === HANDLERY POMIARÓW ===
-
   async function handleAddMeasurement(e: React.FormEvent) {
     e.preventDefault();
     if (!isAdmin) return;
-
-    if (!selectedSeriesId) {
-      setErrorMsg("Wybierz serię, do której chcesz dodać pomiar.");
+    if (selectedSeriesId === null) {
+      setErrorMsg("Wybierz serię.");
       return;
     }
-
     const series = selectedSeries;
-    if (!series) {
-      setErrorMsg("Nie znaleziono wybranej serii.");
+       if (!series) {
+      setErrorMsg("Nie znaleziono serii.");
       return;
     }
-
     const valueNum = Number(newValue);
     if (Number.isNaN(valueNum)) {
       setErrorMsg("Wartość musi być liczbą.");
       return;
     }
-
     if (valueNum < series.min_value || valueNum > series.max_value) {
-      setErrorMsg(
-        `Wartość musi być w zakresie ${series.min_value} – ${series.max_value}.`
-      );
+      setErrorMsg(`Wartość musi być w zakresie ${series.min_value} – ${series.max_value}.`);
       return;
+    }
+
+    let timestampIso: string;
+    if (newUseNow) {
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const year = now.getFullYear();
+      const month = pad(now.getMonth() + 1);
+      const day = pad(now.getDate());
+      const hours = pad(now.getHours());
+      const mins = pad(now.getMinutes());
+      const secs = pad(now.getSeconds());
+      timestampIso = `${year}-${month}-${day}T${hours}:${mins}:${secs}`;
+    } else {
+      if (!newTimestamp) {
+        setErrorMsg("Podaj czas pomiaru.");
+        return;
+      }
+      let ts = newTimestamp;
+      if (ts.length === 16) ts += ":00";
+      timestampIso = ts;
     }
 
     try {
       setErrorMsg(null);
-      const timestamp = new Date().toISOString();
       const created = await apiCreateMeasurement({
         series_id: selectedSeriesId,
         value: valueNum,
-        timestamp,
+        timestamp: timestampIso,
       });
-
       setMeasurementsBySeries((prev) => {
         const arr = prev[selectedSeriesId] ? [...prev[selectedSeriesId]] : [];
         arr.push(created);
-        arr.sort(
-          (a, b) =>
-            new Date(a.timestamp).getTime() -
-            new Date(b.timestamp).getTime()
-        );
+        arr.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         return { ...prev, [selectedSeriesId]: arr };
       });
-
       setNewValue("");
+      if (!newUseNow) setNewTimestamp("");
     } catch (e: any) {
-      console.error(e);
-      setErrorMsg(
-        e?.response?.data?.detail ||
-          "Nie udało się dodać pomiaru (sprawdź zakres i uprawnienia)."
-      );
+      setErrorMsg(e?.response?.data?.detail || "Nie udało się dodać pomiaru.");
     }
   }
 
   async function handleDeleteMeasurement(m: Measurement) {
     if (!isAdmin) return;
-    if (!window.confirm("Na pewno usunąć ten pomiar?")) return;
 
+    const hasMulti = selectedMeasurementIds.length > 1 && selectedMeasurementIds.includes(m.id);
+
+    if (hasMulti) {
+      if (
+        !window.confirm(
+          "Czy usunąć pomiary? Wszystkie zaznaczone pomiary zostaną usunięte."
+        )
+      ) {
+        return;
+      }
+      const idsToDelete = [...selectedMeasurementIds];
+      try {
+        await Promise.all(idsToDelete.map((id) => apiDeleteMeasurement(id)));
+        setMeasurementsBySeries((prev) => {
+          const clone: Record<number, Measurement[]> = {};
+          for (const [seriesIdStr, list] of Object.entries(prev)) {
+            const seriesId = Number(seriesIdStr);
+            clone[seriesId] = list.filter((meas) => !idsToDelete.includes(meas.id));
+          }
+          return clone;
+        });
+        setSelectedMeasurementId(null);
+        setSelectedMeasurementIds([]);
+        if (editMeasurement && idsToDelete.includes(editMeasurement.id)) {
+          setEditMeasurement(null);
+          setEditTs("");
+        }
+      } catch {
+        setErrorMsg("Nie udało się usunąć pomiarów.");
+      }
+      return;
+    }
+
+    if (!window.confirm("Na pewno usunąć ten pomiar?")) return;
     try {
       await apiDeleteMeasurement(m.id);
       setMeasurementsBySeries((prev) => {
         const arr = prev[m.series_id] || [];
-        return {
-          ...prev,
-          [m.series_id]: arr.filter((x) => x.id !== m.id),
-        };
+        return { ...prev, [m.series_id]: arr.filter((x) => x.id !== m.id) };
       });
       if (selectedMeasurementId === m.id) setSelectedMeasurementId(null);
-      if (editMeasurement?.id === m.id) setEditMeasurement(null);
-    } catch (e) {
-      console.error(e);
+      setSelectedMeasurementIds((prev) => prev.filter((id) => id !== m.id));
+      if (editMeasurement?.id === m.id) {
+        setEditMeasurement(null);
+        setEditTs("");
+      }
+    } catch {
       setErrorMsg("Nie udało się usunąć pomiaru.");
     }
   }
@@ -283,25 +363,27 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
   async function handleUpdateMeasurement(e: React.FormEvent) {
     e.preventDefault();
     if (!isAdmin || !editMeasurement) return;
-
-    const series = seriesList.find(
-      (s) => s.id === editMeasurement.series_id
-    );
+    const series = seriesList.find((s) => s.id === editMeasurement.series_id);
     const valueNum = Number(editValue);
-
     if (Number.isNaN(valueNum)) {
       setErrorMsg("Wartość musi być liczbą.");
       return;
     }
-
-    if (
-      series &&
-      (valueNum < series.min_value || valueNum > series.max_value)
-    ) {
-      setErrorMsg(
-        `Wartość musi być w zakresie ${series.min_value} – ${series.max_value}.`
-      );
+    if (series && (valueNum < series.min_value || valueNum > series.max_value)) {
+      setErrorMsg(`Wartość musi być w zakresie ${series.min_value} – ${series.max_value}.`);
       return;
+    }
+
+    let timestampIso = editMeasurement.timestamp;
+    if (editTs) {
+      let ts = editTs;
+      if (ts.length === 16) ts += ":00";
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) {
+        setErrorMsg("Niepoprawny format czasu pomiaru.");
+        return;
+      }
+      timestampIso = ts;
     }
 
     try {
@@ -309,29 +391,22 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
       const updated = await apiUpdateMeasurement(editMeasurement.id, {
         series_id: editMeasurement.series_id,
         value: valueNum,
-        timestamp: editMeasurement.timestamp,
+        timestamp: timestampIso,
       });
-
       setMeasurementsBySeries((prev) => {
         const arr = prev[updated.series_id] ? [...prev[updated.series_id]] : [];
         const idx = arr.findIndex((x) => x.id === updated.id);
         if (idx !== -1) arr[idx] = updated;
         else arr.push(updated);
-        arr.sort(
-          (a, b) =>
-            new Date(a.timestamp).getTime() -
-            new Date(b.timestamp).getTime()
-        );
+        arr.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         return { ...prev, [updated.series_id]: arr };
       });
-
       setEditMeasurement(null);
+      setEditTs("");
       setSelectedMeasurementId(updated.id);
+      setSelectedMeasurementIds([updated.id]);
     } catch (e: any) {
-      console.error(e);
-      setErrorMsg(
-        e?.response?.data?.detail || "Nie udało się zaktualizować pomiaru."
-      );
+      setErrorMsg(e?.response?.data?.detail || "Nie udało się zaktualizować pomiaru.");
     }
   }
 
@@ -339,24 +414,19 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
     window.print();
   }
 
-  // === HANDLERY SERII ===
-
   async function handleUpdateSeries(e: React.FormEvent) {
     e.preventDefault();
-    if (!isAdmin || !selectedSeriesId) return;
-
+    if (!isAdmin || selectedSeriesId === null) return;
     const min = Number(seriesEditMin);
     const max = Number(seriesEditMax);
-
     if (!seriesEditName.trim() || Number.isNaN(min) || Number.isNaN(max)) {
-      setErrorMsg("Uzupełnij poprawnie nazwę oraz min/max.");
+      setErrorMsg("Uzupełnij nazwę oraz min/max.");
       return;
     }
     if (min > max) {
-      setErrorMsg("Wartość minimalna nie może być większa niż maksymalna.");
+      setErrorMsg("Min nie może być > max.");
       return;
     }
-
     try {
       setErrorMsg(null);
       const updated = await apiUpdateSeries(selectedSeriesId, {
@@ -366,35 +436,26 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
         color: seriesEditColor || "#61dafb",
         icon: selectedSeries?.icon,
       });
-
-      setSeriesList((prev) =>
-        prev.map((s) => (s.id === updated.id ? updated : s))
-      );
+      setSeriesList((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
     } catch (e: any) {
-      console.error(e);
-      setErrorMsg(
-        e?.response?.data?.detail || "Nie udało się zaktualizować serii."
-      );
+      setErrorMsg(e?.response?.data?.detail || "Nie udało się zaktualizować serii.");
     }
   }
 
   async function handleCreateSeries(e: React.FormEvent) {
     e.preventDefault();
     if (!isAdmin) return;
-
     const name = newSeriesName.trim();
     const min = Number(newSeriesMin);
     const max = Number(newSeriesMax);
-
     if (!name || Number.isNaN(min) || Number.isNaN(max)) {
-      setErrorMsg("Podaj nazwę i poprawne wartości min/max.");
+      setErrorMsg("Podaj nazwę i min/max.");
       return;
     }
     if (min > max) {
-      setErrorMsg("Dla nowej serii: min nie może być > max.");
+      setErrorMsg("Min nie może być > max.");
       return;
     }
-
     try {
       setErrorMsg(null);
       const created = await apiCreateSeries({
@@ -403,36 +464,23 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
         max_value: max,
         color: newSeriesColor || "#ff7f50",
       });
-
       setSeriesList((prev) => [...prev, created]);
       setNewSeriesName("");
       setNewSeriesMin("");
       setNewSeriesMax("");
       setNewSeriesColor("#ff7f50");
       setSelectedSeriesId(created.id);
-      setActiveSeriesIds((prev) =>
-        prev.includes(created.id) ? prev : [...prev, created.id]
-      );
+      setActiveSeriesIds((prev) => (prev.includes(created.id) ? prev : [...prev, created.id]));
     } catch (e: any) {
-      console.error(e);
-      setErrorMsg(
-        e?.response?.data?.detail || "Nie udało się utworzyć nowej serii."
-      );
+      setErrorMsg(e?.response?.data?.detail || "Nie udało się utworzyć serii.");
     }
   }
 
   async function handleDeleteSeriesClick() {
-    if (!isAdmin || !selectedSeriesId) return;
+    if (!isAdmin || selectedSeriesId === null) return;
     const s = selectedSeries;
     if (!s) return;
-    if (
-      !window.confirm(
-        `Na pewno usunąć serię "${s.name}"? (spowoduje to usunięcie jej pomiarów)`
-      )
-    ) {
-      return;
-    }
-
+    if (!window.confirm(`Na pewno usunąć serię "${s.name}"?`)) return;
     try {
       await apiDeleteSeries(s.id);
       setSeriesList((prev) => prev.filter((x) => x.id !== s.id));
@@ -442,140 +490,131 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
         return clone;
       });
       setActiveSeriesIds((prev) => prev.filter((id) => id !== s.id));
-
       const remaining = seriesList.filter((x) => x.id !== s.id);
       setSelectedSeriesId(remaining.length ? remaining[0].id : null);
-    } catch (e) {
-      console.error(e);
+    } catch {
       setErrorMsg("Nie udało się usunąć serii.");
     }
   }
 
-  // === ZMIANA HASŁA ===
-
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault();
     if (!isAdmin) return;
-
     if (!oldPassword || !newPassword) {
       setPasswordMsg("Podaj oba hasła.");
       return;
     }
-
     try {
       await apiChangePassword(oldPassword, newPassword);
       setPasswordMsg("Hasło zostało zmienione.");
       setOldPassword("");
       setNewPassword("");
     } catch (e: any) {
-      console.error(e);
-      const detail =
-        e?.response?.data?.detail || "Nie udało się zmienić hasła.";
-      setPasswordMsg(String(detail));
+      setPasswordMsg(String(e?.response?.data?.detail || "Nie udało się zmienić hasła."));
     }
   }
 
-  // === STYLE (layout) ===
-
-  const appShellStyle: React.CSSProperties = {
+  const pageWrapStyle: React.CSSProperties = {
     minHeight: "100vh",
     boxSizing: "border-box",
-    padding: "24px",
-    backgroundColor: "#111",
+    padding: "8px 0 16px",
+    backgroundColor: "#1a1a1a",
     color: "#fff",
     fontFamily:
       "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif",
-    display: "flex",
-    justifyContent: "center",
   };
 
-  const contentStyle: React.CSSProperties = {
+  const containerStyle: React.CSSProperties = {
     width: "100%",
-    maxWidth: "1600px",
+    maxWidth: "none",
+    margin: 0,
+    padding: "0 16px",
+    boxSizing: "border-box",
   };
 
   const gridStyle: React.CSSProperties = {
     display: "grid",
-    gridTemplateColumns:
-      "minmax(260px, 320px) minmax(520px, 2fr) minmax(260px, 340px)",
-    gap: "20px",
-    alignItems: "flex-start",
+    gridTemplateColumns: "380px minmax(0, 1fr) 420px",
+    gap: "16px",
+    alignItems: "start",
   };
 
   const cardStyle: React.CSSProperties = {
     boxSizing: "border-box",
-    backgroundColor: "#1b1b1b",
-    border: "1px solid #262626",
-    borderRadius: "10px",
-    padding: "10px",
+    backgroundColor: "#1f1f1f",
+    border: "1px solid #333",
+    borderRadius: 6,
+    padding: "12px",
     color: "#fff",
-    fontSize: "13px",
-    boxShadow: "0 6px 14px rgba(0,0,0,0.35)",
+    fontSize: "14px",
+    display: "flex",
+    flexDirection: "column",
   };
 
   const sectionHeaderStyle: React.CSSProperties = {
-    fontSize: "13px",
+    fontSize: "14px",
     fontWeight: 600,
-    color: "#f5f5f5",
-    marginBottom: "6px",
-    letterSpacing: "0.02em",
+    color: "#fff",
+    marginBottom: "8px",
+    textAlign: "left",
+  };
+
+  const sectionHeaderCenterStyle: React.CSSProperties = {
+    ...sectionHeaderStyle,
+    textAlign: "center",
   };
 
   const tableHeadStyle: React.CSSProperties = {
-    textAlign: "left",
+    textAlign: "center",
     padding: "6px 8px",
-    color: "#c5c5c5",
+    color: "#ccc",
     fontWeight: 600,
     borderBottom: "1px solid #333",
     whiteSpace: "nowrap",
-    backgroundColor: "#151515",
-    position: "sticky",
-    top: 0,
-    zIndex: 1,
   };
 
   const tdStyleLeft: React.CSSProperties = {
     padding: "6px 8px",
-    borderBottom: "1px solid #242424",
+    borderBottom: "1px solid #333",
     whiteSpace: "nowrap",
-    color: "#e0e0e0",
+    color: "#eee",
+    textAlign: "center",
   };
 
-  const tdStyleRight: React.CSSProperties = {
-    ...tdStyleLeft,
-    textAlign: "right",
+  const tdStyleCenter: React.CSSProperties = {
+    padding: "6px 8px",
+    borderBottom: "1px solid #333",
+    textAlign: "center",
+    whiteSpace: "nowrap",
+    color: "#fff",
   };
 
-  const mutedStyle: React.CSSProperties = {
-    color: "#9e9e9e",
-    fontSize: "12px",
-  };
+  const mutedStyle: React.CSSProperties = { color: "#bbb", fontSize: "13px" };
 
   const errorStyle: React.CSSProperties = {
-    backgroundColor: "#5a1111",
+    backgroundColor: "#400",
     color: "#fff",
-    fontSize: "12px",
-    padding: "8px 10px",
-    borderRadius: "6px",
-    margin: "0 0 10px 0",
+    fontSize: "13px",
+    padding: "6px 8px",
+    borderRadius: "4px",
+    marginTop: "8px",
   };
 
-  const topBarStyle: React.CSSProperties = {
-    display: "flex",
-    justifyContent: "space-between",
+  const topBarCentered: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "1fr auto 1fr",
     alignItems: "center",
-    marginBottom: "12px",
+    marginBottom: 12,
   };
 
   const buttonGhost: React.CSSProperties = {
-    padding: "6px 12px",
+    padding: "6px 10px",
     fontSize: "12px",
-    borderRadius: "8px",
-    border: "1px solid #555",
-    backgroundColor: "#202020",
-    color: "#f5f5f5",
+    borderRadius: "6px",
+    border: "1px solid #666",
+    backgroundColor: "#2a2a2a",
+    color: "#fff",
     cursor: "pointer",
-    marginLeft: "8px",
   };
 
   const smallButton: React.CSSProperties = {
@@ -589,16 +628,48 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
     marginTop: 2,
   };
 
-  // === TABELA: wspólna oś czasu ===
-
-  type TableRow = {
-    timestamp: string;
-    measurements: Record<number, Measurement>;
+  const rightColumnStyle: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+    alignItems: "stretch",
+    width: "100%",
+    minWidth: 0,
   };
+
+  const rightCardStyle: React.CSSProperties = {
+    ...cardStyle,
+    width: "100%",
+    alignSelf: "stretch",
+    flexShrink: 0,
+  };
+
+  const rightInputBase: React.CSSProperties = {
+    width: "100%",
+    backgroundColor: "#2a2a2a",
+    color: "#fff",
+    border: "1px solid #444",
+    borderRadius: 6,
+    padding: "8px 10px",
+    fontSize: 13,
+    boxSizing: "border-box",
+  };
+
+  const leftFilterInputBase: React.CSSProperties = {
+    width: "100%",
+    backgroundColor: "#2a2a2a",
+    color: "#fff",
+    border: "1px solid #444",
+    borderRadius: 6,
+    padding: "4px 6px",
+    fontSize: 11,
+    boxSizing: "border-box",
+  };
+
+  type TableRow = { timestamp: string; measurements: Record<number, Measurement> };
 
   function buildTableRows(): TableRow[] {
     const map = new Map<string, TableRow>();
-
     for (const seriesId of activeSeriesIds) {
       const list = measurementsBySeries[seriesId] || [];
       for (const m of list) {
@@ -610,20 +681,22 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
         row.measurements[seriesId] = m;
       }
     }
-
     return Array.from(map.values()).sort(
-      (a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     );
   }
 
   const tableRows = buildTableRows();
 
-  // === UI BLOKI ===
+  const rankMap = useMemo(() => {
+    const m = new Map<number, number>();
+    activeSeriesIds.forEach((id, idx) => m.set(id, idx + 1));
+    return m;
+  }, [activeSeriesIds]);
 
   function renderSeriesSelect() {
     return (
-      <div style={cardStyle}>
+      <div style={cardStyle} className="no-print">
         <div style={sectionHeaderStyle}>Seria i filtr czasu</div>
         {loadingSeries ? (
           <div style={mutedStyle}>ładowanie…</div>
@@ -631,19 +704,19 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
           <>
             <label
               className="no-print"
-              style={{ display: "block", marginBottom: 6, fontSize: 11 }}
+              style={{ display: "block", marginBottom: 6, fontSize: 12 }}
             >
               Seria do edycji / dodawania:
               <select
                 style={{
                   width: "100%",
                   marginTop: 2,
-                  backgroundColor: "#262626",
+                  backgroundColor: "#2a2a2a",
                   color: "#fff",
                   border: "1px solid #444",
-                  borderRadius: 8,
+                  borderRadius: "6px",
                   padding: "6px 8px",
-                  fontSize: "12px",
+                  fontSize: "13px",
                 }}
                 value={selectedSeriesId ?? ""}
                 onChange={(e) => {
@@ -663,38 +736,30 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
             <div
               className="no-print"
               style={{
-                marginTop: 6,
+                marginTop: 4,
                 fontSize: 11,
                 color: "#bbb",
-                maxHeight: 150,
+                maxHeight: 220,
                 overflowY: "auto",
-                borderTop: "1px solid #303030",
+                borderTop: "1px solid #333",
                 paddingTop: 4,
               }}
             >
-              <div style={{ marginBottom: 2 }}>
-                Widoczne serie (wykres + tabela):
-              </div>
+              <div style={{ marginBottom: 2 }}>Widoczne serie (wykres + tabela):</div>
               {seriesList.map((s) => {
                 const checked = activeSeriesIds.includes(s.id);
+                const rank = rankMap.get(s.id);
                 return (
                   <label
                     key={s.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      marginBottom: 2,
-                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}
                   >
                     <input
                       type="checkbox"
                       checked={checked}
                       onChange={() => {
                         setActiveSeriesIds((prev) =>
-                          checked
-                            ? prev.filter((id) => id !== s.id)
-                            : [...prev, s.id]
+                          checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]
                         );
                       }}
                     />
@@ -707,13 +772,11 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
                         display: "inline-block",
                       }}
                     />
-                    <span>{s.name}</span>
+                    <span>{checked && rank ? `s${rank}: ` : ""}{s.name}</span>
                   </label>
                 );
               })}
-              {seriesList.length === 0 && (
-                <div>Brak zdefiniowanych serii.</div>
-              )}
+              {seriesList.length === 0 && <div>Brak zdefiniowanych serii.</div>}
             </div>
 
             <div
@@ -727,40 +790,46 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
                 color: "#bbb",
               }}
             >
+              <div style={{ display: "flex", gap: 8, marginBottom: 2 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input
+                    type="radio"
+                    name="filter-mode"
+                    value="date"
+                    checked={filterMode === "date"}
+                    onChange={() => setFilterMode("date")}
+                  />
+                  <span>Po dacie</span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input
+                    type="radio"
+                    name="filter-mode"
+                    value="datetime"
+                    checked={filterMode === "datetime"}
+                    onChange={() => setFilterMode("datetime")}
+                  />
+                  <span>Data i czas</span>
+                </label>
+              </div>
               <label>
                 Od:
                 <input
-                  type="datetime-local"
+                  type={filterMode === "datetime" ? "datetime-local" : "date"}
+                  step={filterMode === "datetime" ? "1" : undefined}
                   value={fromTs}
                   onChange={(e) => setFromTs(e.target.value)}
-                  style={{
-                    marginTop: 2,
-                    width: "100%",
-                    backgroundColor: "#262626",
-                    color: "#fff",
-                    border: "1px solid #444",
-                    borderRadius: 8,
-                    padding: "4px 6px",
-                    fontSize: 11,
-                  }}
+                  style={{ ...leftFilterInputBase, marginTop: 2 }}
                 />
               </label>
               <label>
                 Do:
                 <input
-                  type="datetime-local"
+                  type={filterMode === "datetime" ? "datetime-local" : "date"}
+                  step={filterMode === "datetime" ? "1" : undefined}
                   value={toTs}
                   onChange={(e) => setToTs(e.target.value)}
-                  style={{
-                    marginTop: 2,
-                    width: "100%",
-                    backgroundColor: "#262626",
-                    color: "#fff",
-                    border: "1px solid #444",
-                    borderRadius: 8,
-                    padding: "4px 6px",
-                    fontSize: 11,
-                  }}
+                  style={{ ...leftFilterInputBase, marginTop: 2 }}
                 />
               </label>
               {(fromTs || toTs) && (
@@ -784,84 +853,89 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
 
   function renderChartCard() {
     const map = new Map<string, any>();
-
     for (const seriesId of activeSeriesIds) {
       const list = measurementsBySeries[seriesId] || [];
       for (const m of list) {
         let row = map.get(m.timestamp);
         if (!row) {
-          row = {
-            timestamp: m.timestamp,
-            label: fmtTime(m.timestamp),
-          };
+          row = { timestamp: m.timestamp, label: fmtTime(m.timestamp) };
           map.set(m.timestamp, row);
         }
-        row[`s${seriesId}`] = m.value;
-        row[`mId_s${seriesId}`] = m.id;
+        const rank = rankMap.get(seriesId);
+        if (rank) {
+          const key = `s${rank}`;
+          row[key] = m.value;
+          row[`mId_${key}`] = m.id;
+        }
       }
     }
-
     const chartData = Array.from(map.values()).sort(
-      (a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     );
 
+    const renderLines = (forPrint: boolean) =>
+      activeSeriesIds.map((id, idx) => {
+        const s = seriesList.find((x) => x.id === id);
+        const color = s?.color || "#61dafb";
+        const rank = rankMap.get(id) || idx + 1;
+        const dataKey = `s${rank}`;
+        const mIdKey = `mId_${dataKey}`;
+        const renderDot = (props: any) => {
+          const { cx, cy, payload } = props;
+          const val = payload[dataKey];
+          const isActive = selectedMeasurementIds.includes(payload[mIdKey]);
+          const isPrimary = payload[mIdKey] === selectedMeasurementId;
+          const baseColor = color;
+          const r = val == null ? 0 : isPrimary ? 6 : isActive ? 4 : 3;
+          const fillColor = isActive || isPrimary || forPrint ? baseColor : "#ffffff";
+          const strokeColor = fillColor;
+          return <circle cx={cx} cy={cy} r={r} fill={fillColor} stroke={strokeColor} />;
+        };
+        return (
+          <Line
+            key={id}
+            type="monotone"
+            dataKey={dataKey}
+            stroke={color}
+            dot={renderDot as any}
+          />
+        );
+      });
+
     return (
-      <div style={{ ...cardStyle, marginBottom: 14 }}>
-        <div style={sectionHeaderStyle}>Wykres wartości w czasie</div>
+      <div style={{ ...cardStyle, marginBottom: 16 }} className="card chart-card">
+        <div style={sectionHeaderCenterStyle}>Wykres wartości w czasie</div>
         {loadingMeas ? (
           <div style={mutedStyle}>ładowanie…</div>
         ) : activeSeriesIds.length === 0 ? (
-          <div style={mutedStyle}>
-            Wybierz co najmniej jedną serię do wyświetlenia.
-          </div>
+          <div style={mutedStyle}>Wybierz co najmniej jedną serię.</div>
         ) : chartData.length === 0 ? (
-          <div style={mutedStyle}>Brak danych dla wybranego zakresu.</div>
+          <div style={mutedStyle}>Brak danych.</div>
         ) : (
-          <div style={{ width: "100%", height: 260 }}>
-            <ResponsiveContainer width="100%" height="100%">
+          <>
+            <div className="chart-screen" style={{ width: "100%", height: 360 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ left: 4, right: 8, top: 8, bottom: 8 }}>
+                  <XAxis dataKey="label" />
+                  <YAxis />
+                  <Tooltip />
+                  {renderLines(false)}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="chart-print">
               <LineChart
+                width={700}
+                height={250}
                 data={chartData}
                 margin={{ left: 4, right: 8, top: 8, bottom: 8 }}
               >
                 <XAxis dataKey="label" />
                 <YAxis />
-                <Tooltip />
-                {activeSeriesIds.map((id) => {
-                  const s = seriesList.find((x) => x.id === id);
-                  const color = s?.color || "#61dafb";
-                  const dataKey = `s${id}`;
-                  const mIdKey = `mId_s${id}`;
-                  return (
-                    <Line
-                      key={id}
-                      type="monotone"
-                      dataKey={dataKey}
-                      stroke={color}
-                      activeDot={{ r: 5 }}
-                      dot={(props: any) => {
-                        const { cx, cy, payload } = props;
-                        const val = payload[dataKey];
-                        if (val == null) return <></>; // ważne: nie null
-                        const isActive =
-                          payload[mIdKey] === selectedMeasurementId;
-                        return (
-                          <circle
-                            cx={cx}
-                            cy={cy}
-                            r={isActive ? 6 : 3}
-                            fill={isActive ? color : "#ffffff"}
-                            stroke={isActive ? color : "#ffffff"}
-                            style={{ transition: "all 0.15s ease-out" }}
-                          />
-                        );
-                      }}
-                    />
-                  );
-                })}
+                {renderLines(true)}
               </LineChart>
-            </ResponsiveContainer>
-          </div>
+            </div>
+          </>
         )}
       </div>
     );
@@ -869,163 +943,172 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
 
   function renderTable() {
     return (
-      <div style={cardStyle}>
-        <div style={sectionHeaderStyle}>
-          Pomiary (serie w osobnych kolumnach)
-        </div>
-        <div style={{ maxHeight: 360, overflowY: "auto" }}>
-          <table
-            style={{
-              borderCollapse: "collapse",
-              width: "100%",
-              fontSize: "12px",
-            }}
-          >
-            <thead>
-              <tr>
-                <th style={tableHeadStyle}>Czas</th>
-                {activeSeriesIds.map((id) => {
-                  const s = seriesList.find((x) => x.id === id);
-                  return (
-                    <th key={id} style={tableHeadStyle}>
-                      {s?.name ?? `Seria ${id}`}
-                    </th>
-                  );
-                })}
-                {isAdmin && (
-                  <th style={tableHeadStyle} className="no-print">
-                    Akcje
+      <div style={cardStyle} className="card table-card">
+        <div style={sectionHeaderCenterStyle}>Zestawienie pomiarów</div>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "13px" }}>
+          <thead>
+            <tr>
+              <th style={tableHeadStyle}>Czas</th>
+              {activeSeriesIds.map((id, idx) => {
+                const s = seriesList.find((x) => x.id === id);
+                const rank = rankMap.get(id) || idx + 1;
+                return (
+                  <th key={id} style={tableHeadStyle}>
+                    {s ? `s${rank}: ${s.name}` : `s${rank}`}
                   </th>
-                )}
+                );
+              })}
+              {isAdmin && (
+                <th style={tableHeadStyle} className="no-print">
+                  Akcje
+                </th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {loadingMeas ? (
+              <tr>
+                <td
+                  style={tdStyleLeft}
+                  colSpan={1 + activeSeriesIds.length + (isAdmin ? 1 : 0)}
+                >
+                  ładowanie…
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loadingMeas ? (
-                <tr>
-                  <td
-                    style={tdStyleLeft}
-                    colSpan={
-                      1 + activeSeriesIds.length + (isAdmin ? 1 : 0)
-                    }
-                  >
-                    ładowanie…
-                  </td>
-                </tr>
-              ) : activeSeriesIds.length === 0 ? (
-                <tr>
-                  <td
-                    style={tdStyleLeft}
-                    colSpan={1 + (isAdmin ? 1 : 0)}
-                  >
-                    Wybierz serie do wyświetlenia.
-                  </td>
-                </tr>
-              ) : tableRows.length === 0 ? (
-                <tr>
-                  <td
-                    style={tdStyleLeft}
-                    colSpan={
-                      1 + activeSeriesIds.length + (isAdmin ? 1 : 0)
-                    }
-                  >
-                    Brak pomiarów dla wybranego zakresu.
-                  </td>
-                </tr>
-              ) : (
-                tableRows.map((row) => {
-                  const any = Object.values(row.measurements)[0];
-                  return (
-                    <tr
-                      key={row.timestamp}
-                      style={{
-                        cursor: any ? "pointer" : "default",
-                      }}
-                      onClick={() => {
-                        if (any) {
-                          setSelectedMeasurementId(any.id);
-                          if (isAdmin) {
-                            setEditMeasurement(any);
-                            setEditValue(String(any.value));
-                          }
-                        }
-                      }}
-                    >
-                      <td style={tdStyleLeft}>
-                        {fmtFull(row.timestamp)}
-                      </td>
-                      {activeSeriesIds.map((id) => {
-                        const m = row.measurements[id];
-                        const isSelected =
-                          m && m.id === selectedMeasurementId;
-                        return (
-                          <td
-                            key={id}
-                            style={{
-                              ...tdStyleRight,
-                              backgroundColor: isSelected
-                                ? "#272727"
-                                : "transparent",
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (m) {
-                                setSelectedMeasurementId(m.id);
-                                if (isAdmin) {
-                                  setEditMeasurement(m);
-                                  setEditValue(String(m.value));
-                                }
-                              }
-                            }}
-                          >
-                            {m ? m.value : "–"}
-                            {isAdmin && m && (
-                              <button
-                                className="no-print"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteMeasurement(m);
-                                }}
-                                style={{
-                                  marginLeft: 6,
-                                  padding: "2px 6px",
-                                  fontSize: 9,
-                                  borderRadius: 4,
-                                  border: "1px solid #555",
-                                  backgroundColor: "#2a2a2a",
-                                  color: "#fff",
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Usuń
-                              </button>
-                            )}
-                          </td>
-                        );
-                      })}
-                      {isAdmin && (
+            ) : activeSeriesIds.length === 0 ? (
+              <tr>
+                <td style={tdStyleLeft} colSpan={1 + (isAdmin ? 1 : 0)}>
+                  Wybierz serie do wyświetlenia.
+                </td>
+              </tr>
+            ) : tableRows.length === 0 ? (
+              <tr>
+                <td
+                  style={tdStyleLeft}
+                  colSpan={1 + activeSeriesIds.length + (isAdmin ? 1 : 0)}
+                >
+                  Brak pomiarów.
+                </td>
+              </tr>
+            ) : (
+              tableRows.map((row) => {
+                const rowMeasurementsList: Measurement[] = activeSeriesIds
+                  .map((id) => row.measurements[id])
+                  .filter((m): m is Measurement => Boolean(m));
+
+                return (
+                  <tr key={row.timestamp}>
+                    <td style={tdStyleLeft}>{fmtFull(row.timestamp)}</td>
+                    {activeSeriesIds.map((id) => {
+                      const m = row.measurements[id];
+                      const isSelected = m && selectedMeasurementIds.includes(m.id);
+                      return (
                         <td
-                          style={tdStyleLeft}
-                          className="no-print"
+                          key={id}
+                          style={{
+                            ...tdStyleCenter,
+                            backgroundColor: isSelected ? "#333" : "transparent",
+                            userSelect: "none",
+                          }}
+                          onClick={(e) => {
+                            if (!m) return;
+                            setSelectedSeriesId(m.series_id);
+
+                            if (e.ctrlKey || e.metaKey) {
+                              setSelectedMeasurementIds((prev) =>
+                                prev.includes(m.id) ? prev : [...prev, m.id]
+                              );
+                              setSelectedMeasurementId(m.id);
+                            } else {
+                              setSelectedMeasurementIds([m.id]);
+                              setSelectedMeasurementId(m.id);
+                            }
+
+                            if (isAdmin) {
+                              setEditMeasurement(m);
+                              setEditValue(String(m.value));
+                              setEditTs(toLocalInputValue(m.timestamp));
+                            }
+                          }}
                         >
-                          {any && (
-                            <span
+                          {m ? m.value : "–"}
+                          {isAdmin && m && (
+                            <button
+                              className="no-print"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteMeasurement(m);
+                              }}
                               style={{
+                                marginLeft: 6,
+                                padding: "2px 6px",
                                 fontSize: 9,
-                                color: "#777",
+                                borderRadius: 4,
+                                border: "1px solid #555",
+                                backgroundColor: "#2a2a2a",
+                                color: "#fff",
+                                cursor: "pointer",
                               }}
                             >
-                              Kliknij wartość, aby edytować
-                            </span>
+                              Usuń
+                            </button>
                           )}
                         </td>
-                      )}
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                      );
+                    })}
+                    {isAdmin && (
+                      <td style={tdStyleLeft} className="no-print">
+                        {rowMeasurementsList.length > 0 && (
+                          <button
+                            onClick={() => {
+                              const list = rowMeasurementsList;
+                              if (list.length === 0) return;
+
+                              let target: Measurement;
+                              if (
+                                editMeasurement &&
+                                editMeasurement.timestamp === row.timestamp
+                              ) {
+                                const currentIdx = list.findIndex(
+                                  (m) => m.id === editMeasurement.id
+                                );
+                                const nextIdx =
+                                  currentIdx === -1
+                                    ? 0
+                                    : (currentIdx + 1) % list.length;
+                                target = list[nextIdx];
+                              } else {
+                                target = list[0];
+                              }
+
+                              setSelectedSeriesId(target.series_id);
+                              setSelectedMeasurementId(target.id);
+                              setSelectedMeasurementIds([target.id]);
+                              setEditMeasurement(target);
+                              setEditValue(String(target.value));
+                              setEditTs(toLocalInputValue(target.timestamp));
+                            }}
+                            style={{
+                              padding: "4px 8px",
+                              fontSize: 11,
+                              borderRadius: 6,
+                              border: "1px solid #555",
+                              backgroundColor: "#2a2a2a",
+                              color: "#fff",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Edytuj wartość
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     );
   }
@@ -1033,38 +1116,52 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
   function renderAddMeasurementBox() {
     if (!isAdmin) return null;
     return (
-      <div style={cardStyle} className="no-print">
+      <div style={rightCardStyle} className="no-print">
         <div style={sectionHeaderStyle}>Dodaj nowy pomiar</div>
         <form onSubmit={handleAddMeasurement}>
           <div style={{ marginBottom: 6, ...mutedStyle }}>
-            Dodaj wartość do wybranej serii. Czas = bieżący moment.
+            Dodaj wartość do wybranej serii. Czas możesz ustawić na bieżący lub podać ręcznie.
           </div>
+
+          <div style={{ marginBottom: 6 }}>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
+            >
+              <input
+                type="checkbox"
+                checked={newUseNow}
+                onChange={(e) => setNewUseNow(e.target.checked)}
+              />
+              <span>Użyj bieżącego czasu</span>
+            </label>
+          </div>
+
+          {!newUseNow && (
+            <input
+              type="datetime-local"
+              step="1"
+              value={newTimestamp}
+              onChange={(e) => setNewTimestamp(e.target.value)}
+              style={{ ...rightInputBase, marginBottom: 8 }}
+            />
+          )}
+
           <input
             type="number"
             step="any"
             value={newValue}
             onChange={(e) => setNewValue(e.target.value)}
             placeholder="Wartość pomiaru"
-            style={{
-              width: "100%",
-              backgroundColor: "#262626",
-              color: "#fff",
-              border: "1px solid #444",
-              borderRadius: 8,
-              padding: "7px 9px",
-              fontSize: "12px",
-              marginBottom: "6px",
-            }}
+            style={{ ...rightInputBase, marginBottom: 8 }}
           />
           <button
             type="submit"
             style={{
-              width: "100%",
-              padding: "7px 9px",
-              fontSize: "12px",
-              borderRadius: 8,
-              border: "1px solid #2e7d32",
-              backgroundColor: "#2e7d32",
+              padding: "6px 10px",
+              fontSize: "13px",
+              borderRadius: "6px",
+              border: "1px solid #666",
+              backgroundColor: "#2f7d32",
               color: "#fff",
               cursor: "pointer",
             }}
@@ -1078,35 +1175,31 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
 
   function renderEditMeasurementBox() {
     if (!isAdmin || !editMeasurement) return null;
-    const series = seriesList.find(
-      (s) => s.id === editMeasurement.series_id
-    );
+    const series = seriesList.find((s) => s.id === editMeasurement.series_id);
     return (
-      <div style={cardStyle} className="no-print">
+      <div style={rightCardStyle} className="no-print">
         <div style={sectionHeaderStyle}>Edytuj pomiar</div>
-        <div style={{ ...mutedStyle, marginBottom: 2 }}>
-          Seria: {series?.name} (min {series?.min_value}, max{" "}
-          {series?.max_value})
-        </div>
         <div style={{ ...mutedStyle, marginBottom: 4 }}>
-          Czas: {fmtFull(editMeasurement.timestamp)}
+          Seria: {series?.name} (min {series?.min_value}, max {series?.max_value})
         </div>
+        <div style={{ ...mutedStyle, marginBottom: 4 }}>Czas pomiaru:</div>
         <form onSubmit={handleUpdateMeasurement}>
+          <input
+            type="datetime-local"
+            step="1"
+            value={editTs}
+            onChange={(e) => setEditTs(e.target.value)}
+            style={{ ...rightInputBase, marginBottom: 6 }}
+          />
+          <div style={{ ...mutedStyle, marginBottom: 6 }}>
+            Aktualnie zapisany czas: {fmtFull(editMeasurement.timestamp)}
+          </div>
           <input
             type="number"
             step="any"
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
-            style={{
-              width: "100%",
-              marginBottom: 6,
-              padding: "6px 8px",
-              backgroundColor: "#262626",
-              border: "1px solid #444",
-              borderRadius: 8,
-              color: "#fff",
-              fontSize: 12,
-            }}
+            style={{ ...rightInputBase, marginBottom: 6 }}
           />
           <div style={{ display: "flex", gap: 6 }}>
             <button
@@ -1114,9 +1207,9 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
               style={{
                 flex: 1,
                 padding: "6px 8px",
-                fontSize: "11px",
-                borderRadius: 8,
-                border: "1px solid #1e88e5",
+                fontSize: "12px",
+                borderRadius: 6,
+                border: "1px solid #666",
                 backgroundColor: "#1e88e5",
                 color: "#fff",
                 cursor: "pointer",
@@ -1129,11 +1222,12 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
               onClick={() => {
                 setEditMeasurement(null);
                 setSelectedMeasurementId(null);
+                setEditTs("");
               }}
               style={{
                 padding: "6px 8px",
-                fontSize: "11px",
-                borderRadius: 8,
+                fontSize: "12px",
+                borderRadius: 6,
                 border: "1px solid #555",
                 backgroundColor: "#2a2a2a",
                 color: "#fff",
@@ -1150,48 +1244,35 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
 
   function renderSeriesAdminBox() {
     if (!isAdmin) return null;
-
     return (
-      <div style={cardStyle} className="no-print">
+      <div style={rightCardStyle} className="no-print">
         <div style={sectionHeaderStyle}>Konfiguracja serii</div>
-
         {selectedSeries && (
           <>
-            <div style={{ ...mutedStyle, marginBottom: 4 }}>
-              Edytuj wybraną serię:
-            </div>
+            <div style={{ ...mutedStyle, marginBottom: 4 }}>Edytuj wybraną serię:</div>
             <form onSubmit={handleUpdateSeries}>
               <input
                 value={seriesEditName}
                 onChange={(e) => setSeriesEditName(e.target.value)}
                 placeholder="Nazwa serii"
-                style={{
-                  width: "100%",
-                  marginBottom: 4,
-                  padding: "6px 8px",
-                  backgroundColor: "#262626",
-                  border: "1px solid #444",
-                  borderRadius: 8,
-                  color: "#fff",
-                  fontSize: 12,
-                }}
+                style={{ ...rightInputBase, marginBottom: 4 }}
               />
-              <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 4,
+                  marginBottom: 4,
+                  minWidth: 0,
+                }}
+              >
                 <input
                   type="number"
                   step="any"
                   value={seriesEditMin}
                   onChange={(e) => setSeriesEditMin(e.target.value)}
                   placeholder="Min"
-                  style={{
-                    flex: 1,
-                    padding: "6px 8px",
-                    backgroundColor: "#262626",
-                    border: "1px solid #444",
-                    borderRadius: 8,
-                    color: "#fff",
-                    fontSize: 12,
-                  }}
+                  style={{ ...rightInputBase }}
                 />
                 <input
                   type="number"
@@ -1199,21 +1280,11 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
                   value={seriesEditMax}
                   onChange={(e) => setSeriesEditMax(e.target.value)}
                   placeholder="Max"
-                  style={{
-                    flex: 1,
-                    padding: "6px 8px",
-                    backgroundColor: "#262626",
-                    border: "1px solid #444",
-                    borderRadius: 8,
-                    color: "#fff",
-                    fontSize: 12,
-                  }}
+                  style={{ ...rightInputBase }}
                 />
               </div>
               <div style={{ marginBottom: 6 }}>
-                <span style={{ ...mutedStyle, marginRight: 6 }}>
-                  Kolor:
-                </span>
+                <span style={{ ...mutedStyle, marginRight: 6 }}>Kolor:</span>
                 <input
                   type="color"
                   value={seriesEditColor}
@@ -1226,9 +1297,9 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
                   style={{
                     flex: 1,
                     padding: "6px 8px",
-                    fontSize: "11px",
-                    borderRadius: 8,
-                    border: "1px solid #1e88e5",
+                    fontSize: "12px",
+                    borderRadius: 6,
+                    border: "1px solid #666",
                     backgroundColor: "#1e88e5",
                     color: "#fff",
                     cursor: "pointer",
@@ -1241,9 +1312,9 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
                   onClick={handleDeleteSeriesClick}
                   style={{
                     padding: "6px 8px",
-                    fontSize: "11px",
-                    borderRadius: 8,
-                    border: "1px solid #a00000",
+                    fontSize: "12px",
+                    borderRadius: 6,
+                    border: "1px solid #844",
                     backgroundColor: "#a00000",
                     color: "#fff",
                     cursor: "pointer",
@@ -1256,48 +1327,31 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
           </>
         )}
 
-        <div
-          style={{
-            borderTop: "1px solid #333",
-            margin: "8px 0",
-          }}
-        />
+        <div style={{ borderTop: "1px solid #333", margin: "8px 0" }} />
 
-        <div style={{ ...mutedStyle, marginBottom: 4 }}>
-          Dodaj nową serię:
-        </div>
+        <div style={{ ...mutedStyle, marginBottom: 4 }}>Dodaj nową serię:</div>
         <form onSubmit={handleCreateSeries}>
           <input
             value={newSeriesName}
             onChange={(e) => setNewSeriesName(e.target.value)}
             placeholder="Nazwa nowej serii"
-            style={{
-              width: "100%",
-              marginBottom: 4,
-              padding: "6px 8px",
-              backgroundColor: "#262626",
-              border: "1px solid #444",
-              borderRadius: 8,
-              color: "#fff",
-              fontSize: 12,
-            }}
+            style={{ ...rightInputBase, marginBottom: 4 }}
           />
-          <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 4,
+              marginBottom: 4,
+            }}
+          >
             <input
               type="number"
               step="any"
               value={newSeriesMin}
               onChange={(e) => setNewSeriesMin(e.target.value)}
               placeholder="Min"
-              style={{
-                flex: 1,
-                padding: "6px 8px",
-                backgroundColor: "#262626",
-                border: "1px solid #444",
-                borderRadius: 8,
-                color: "#fff",
-                fontSize: 12,
-              }}
+              style={{ ...rightInputBase }}
             />
             <input
               type="number"
@@ -1305,21 +1359,11 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
               value={newSeriesMax}
               onChange={(e) => setNewSeriesMax(e.target.value)}
               placeholder="Max"
-              style={{
-                flex: 1,
-                padding: "6px 8px",
-                backgroundColor: "#262626",
-                border: "1px solid #444",
-                borderRadius: 8,
-                color: "#fff",
-                fontSize: 12,
-              }}
+              style={{ ...rightInputBase }}
             />
           </div>
           <div style={{ marginBottom: 6 }}>
-            <span style={{ ...mutedStyle, marginRight: 6 }}>
-              Kolor:
-            </span>
+            <span style={{ ...mutedStyle, marginRight: 6 }}>Kolor:</span>
             <input
               type="color"
               value={newSeriesColor}
@@ -1330,9 +1374,9 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
             type="submit"
             style={{
               padding: "6px 8px",
-              fontSize: "11px",
-              borderRadius: 8,
-              border: "1px solid #388e3c",
+              fontSize: "12px",
+              borderRadius: 6,
+              border: "1px solid #666",
               backgroundColor: "#388e3c",
               color: "#fff",
               cursor: "pointer",
@@ -1348,9 +1392,8 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
 
   function renderChangePasswordBox() {
     if (!isAdmin) return null;
-
     return (
-      <div style={cardStyle} className="no-print">
+      <div style={rightCardStyle} className="no-print">
         <div style={sectionHeaderStyle}>Zmień hasło administratora</div>
         <form onSubmit={handleChangePassword}>
           <input
@@ -1358,40 +1401,22 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
             value={oldPassword}
             onChange={(e) => setOldPassword(e.target.value)}
             placeholder="Obecne hasło"
-            style={{
-              width: "100%",
-              marginBottom: 4,
-              padding: "6px 8px",
-              backgroundColor: "#262626",
-              border: "1px solid #444",
-              borderRadius: 8,
-              color: "#fff",
-              fontSize: 12,
-            }}
+            style={{ ...rightInputBase, marginBottom: 4 }}
           />
           <input
             type="password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             placeholder="Nowe hasło"
-            style={{
-              width: "100%",
-              marginBottom: 6,
-              padding: "6px 8px",
-              backgroundColor: "#262626",
-              border: "1px solid #444",
-              borderRadius: 8,
-              color: "#fff",
-              fontSize: 12,
-            }}
+            style={{ ...rightInputBase, marginBottom: 6 }}
           />
           <button
             type="submit"
             style={{
               padding: "6px 8px",
-              fontSize: "11px",
-              borderRadius: 8,
-              border: "1px solid #455a64",
+              fontSize: "12px",
+              borderRadius: 6,
+              border: "1px solid #666",
               backgroundColor: "#455a64",
               color: "#fff",
               cursor: "pointer",
@@ -1402,47 +1427,23 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
           </button>
         </form>
         {passwordMsg && (
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 11,
-              color: "#ccc",
-            }}
-          >
-            {passwordMsg}
-          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#ccc" }}>{passwordMsg}</div>
         )}
       </div>
     );
   }
 
-  // === RENDER ===
-
   return (
-    <div style={appShellStyle}>
-      <div style={contentStyle}>
-        <div style={topBarStyle} className="no-print">
-          <div
-            style={{
-              fontSize: 18,
-              fontWeight: 600,
-              letterSpacing: "0.04em",
-            }}
-          >
-            Measurement Dashboard
+    <div style={pageWrapStyle} className="page-wrap">
+      <div style={containerStyle}>
+        <div className="no-print" style={topBarCentered}>
+          <div />
+          <div style={{ textAlign: "center", fontSize: 18, fontWeight: 600 }}>
+            Dashboard pomiarów
           </div>
-          <div style={{ fontSize: 12 }}>
-            {isAdmin && (
-              <span style={{ marginRight: 12 }}>
-                Zalogowano jako{" "}
-                <span style={{ fontWeight: 600 }}>admin</span>
-              </span>
-            )}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <button style={buttonGhost} onClick={handlePrint}>
               Drukuj widok
-            </button>
-            <button style={buttonGhost} onClick={onLogout}>
-              Wyloguj
             </button>
           </div>
         </div>
@@ -1450,36 +1451,22 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
         {!isAdmin && (
           <p
             className="no-print"
-            style={{
-              marginBottom: 10,
-              fontSize: 12,
-              color: "#b0bec5",
-            }}
+            style={{ marginTop: -8, marginBottom: 12, fontSize: 13, color: "#aaaaaa" }}
           >
-            Jesteś w trybie <strong>tylko do odczytu</strong>. Zaloguj się jako
-            admin, aby dodawać, edytować i usuwać dane.
+            Jesteś w trybie <strong>tylko do odczytu</strong>. Zaloguj się jako admin, aby
+            dodawać, edytować i usuwać dane.
           </p>
         )}
 
         {errorMsg && <div style={errorStyle}>{errorMsg}</div>}
 
         <div data-dashboard-grid style={gridStyle}>
-          <div>{renderSeriesSelect()}</div>
-
+          {renderSeriesSelect()}
           <div>
             {renderChartCard()}
             {renderTable()}
           </div>
-
-          <div
-            data-dashboard-right
-            className="no-print"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-            }}
-          >
+          <div className="no-print" style={rightColumnStyle}>
             {renderAddMeasurementBox()}
             {renderEditMeasurementBox()}
             {renderSeriesAdminBox()}
@@ -1487,7 +1474,6 @@ export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
           </div>
         </div>
       </div>
-
       <style>{responsiveCSS + printCSS}</style>
     </div>
   );
