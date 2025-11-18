@@ -128,6 +128,7 @@ const printCSS = `
 `;
 
 export default function Dashboard({ onLogout, isAdmin }: DashboardProps) {
+  void onLogout;
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeriesId, setSelectedSeriesId] = useState<number | null>(null);
   const [activeSeriesIds, setActiveSeriesIds] = useState<number[]>([]);
